@@ -9,7 +9,7 @@ grid of cells. What you type is saved as you go, and never over a change an
 agent made meanwhile. The window resizes from any edge or corner like any
 window, maximizes and restores, and any file opens in its own Herdr tab.
 
-![md-viewer](preview.gif)
+![md-viewer](preview.png)
 
 This file is the brief: enough to build the mod from an empty folder. The
 files next to it are one build of it.
