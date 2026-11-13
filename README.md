@@ -64,6 +64,22 @@ Or by hand:
 Herdr picks it up at once; no restart is needed. To remove it, delete the
 folder and the key.
 
+### Update
+
+From a clone of this repo (the first time,
+`git clone https://github.com/zxlew693/md-viewer.git ~/src/md-viewer`):
+
+```sh
+cd ~/src/md-viewer && git pull
+rsync -a --delete mods/md-viewer/ ~/.config/herdr-app/mods/md-viewer/
+herdr-app check ~/.config/herdr-app/mods/md-viewer
+```
+
+`--delete` removes files the repo no longer has; leave it off if you keep your
+own files in that folder. If `herdr-app` isn't on your PATH on macOS, use
+`/Applications/Herdr.app/Contents/MacOS/Herdr check ...`. Herdr reloads the mod
+at once, but the reload can close open md-viewer windows; press the key again.
+
 ## Use
 
 | Action | How |
