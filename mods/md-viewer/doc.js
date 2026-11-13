@@ -1,5 +1,6 @@
 // From Kanso's markdown panel, by jlopezlira (https://github.com/jlopezlira/herdr-kanso). Apache-2.0.
-// Modified for md-viewer by zxlew693, 2026: a scroll handle kept with the document, so the scroll survives a window swap.
+// Modified for md-viewer by zxlew693, 2026: a scroll handle kept with the document, so the scroll survives a window swap;
+// the text fills the window's width (no 760 px column).
 import { serviceOn } from "./platform-host.js";
 import { paths } from "./platform-paths.js";
 import { fileApi } from "./platform-files.js";
@@ -12,7 +13,7 @@ import { bring, appRelative, markdownParts, staleView, bytesLabel, copyFailure }
 
 export function readingLines(t) {
   const { line } = skeleton({ border: t.border });
-  return breathe(v_flex().id("kanso-skeleton").w_full().max_w(760).px(16).pt(14).gap(10))
+  return breathe(v_flex().id("kanso-skeleton").w_full().px(16).pt(14).gap(10))
     .children([280, 200, 240, 120, 220, 160, 190].map((w) => line(w, 12)));
 }
 
@@ -289,7 +290,7 @@ export class MarkdownDoc {
       ? div().flex_1().min_h(0).px(6).py(4).child(Editor.new(this.source).size_full())
       : div().id(`${id}-scroll`).flex_1().min_h(0).overflow_y_scrollbar()
         .when(Boolean(this.scroll), (el) => el.track_scroll(this.scroll))
-        .child(v_flex().flex_none().w_full().max_w(760).px(16).pt(14).pb(8).gap(10)
+        .child(v_flex().flex_none().w_full().px(16).pt(14).pb(8).gap(10)
           .children(this.blocks.map((b, i) => this.block(b, i, t, id)).filter(Boolean)))
         .when(this.canEdit, (el) => el.child(div().id(`${id}-append`).flex_none().h(120).w_full()
           .on_mouse_down("left", (e, cx) => { if (e.click_count === 2) this.append(cx); })));

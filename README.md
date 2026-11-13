@@ -25,6 +25,16 @@ a tab of their own. You can edit them right where you read them.
   to fill Herdr and restore it to where it was.
 - **Open in new tab**: open any file in its own Herdr tab, where you can split
   a terminal beside it.
+- **Open in window**: open any file in a window of its own. It floats over
+  every space (a tab stays in its space), and you can move, resize, maximize
+  and close it on its own. Open as many as you like.
+- **Download a copy**: save the file you're reading, edits included, anywhere.
+  On Windows it's the usual Save As dialog (rename it, see what's there; it asks
+  before replacing a file). On macOS and Linux you pick a folder, and a name
+  already taken there becomes "name (1).md".
+  The "Downloaded" message stays 30 seconds (a strip counts down, and it waits
+  while the pointer is on it); it opens the copy in a tab, or
+  shows it in its folder.
 - **Other machines**: in a pane on an SSH machine, it lists and shows that
   machine's files (read only).
 - **Reviews**: `md-review <file>` lets an agent hand you a file to review and
@@ -59,7 +69,9 @@ folder and the key.
 |---|---|
 | Open or close the window | Ctrl+Shift+M |
 | Show a file | Click it in the list |
+| Open a file in its own window | The window icon on its row, or in the header |
 | Open a file in a new tab | The arrow icon at the end of its row, or in the header |
+| Download a copy | The tray icon in the header or on a row in the list |
 | Filter the list | Type in the box at the top; Escape clears it |
 | Edit a block | Double-click it; Escape when done |
 | Save now | Ctrl+S (it also saves by itself) |

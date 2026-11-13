@@ -1,4 +1,5 @@
-import { localService, serviceOn } from "./platform-host.js";
+import { localService, localName, serviceOn } from "./platform-host.js";
+import { powershell, psQuote } from "./platform-command.js";
 import { paths } from "./platform-paths.js";
 import { clipboardApi } from "./platform-clipboard.js";
 import { fileApi } from "./platform-files.js";
@@ -14,7 +15,7 @@ import { markdownApi } from "./platform-markdown.js";
 // the ones to review in data/markdown-review; watchOpens picks both up.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Input, InputState } from "gpui-base";
-import { appHome, exec, watchFolder, focused, spaces, props, nextCommand, run, openOverlay, closeOverlay, shared, setShared, theme, home } from "herdr";
+import { appHome, exec, watchFolder, focused, spaces, props, nextCommand, run, openOverlay, closeOverlay, shared, setShared, theme, home, pickFolder, readTextFile, writeTextFile } from "herdr";
 import { MarkdownDoc, tildePath } from "./doc.js";
 import { afterMount } from "./pure.js";
 import { pollStart, pollNext, takeStamp, ArmPoll, asOf } from "./remote-file.js";
@@ -23,6 +24,83 @@ const ICONS = "mods/md-viewer/icons";
 const isMarkdown = (path) => /\.(md|markdown|mdx)$/i.test(path);
 const folderOf = (path) => paths.dirname(path);
 const nameOf = (path) => paths.basename(path);
+// A download's toast is a small md-viewer window of its own (Herdr's toast runs one action; this
+// one has two). Copies share this module: one toast at a time, and the boot copy's toggle check
+// doesn't count it as the panel's window.
+const TOAST = { w: 360, h: 68, margin: 16, seconds: 30, tick: 50 };
+let toastId = null;
+// Where the open window lists (copies share this module): Ctrl+Shift+M from another folder moves
+// it there instead of closing it.
+let livePlace = null;
+// The windows that each show one file ("Open in window"): not the panel's window, so the boot
+// copy's toggle check doesn't count them, and Ctrl+Shift+M leaves them open.
+const docWindows = new Set();
+const samePlace = (a, b) => Boolean(a && b) && (a.on ?? null) === (b.on ?? null)
+  && String(a.folder ?? "").replace(/[\\/]+$/, "").toLowerCase() === String(b.folder ?? "").replace(/[\\/]+$/, "").toLowerCase();
+const showDownloaded = (file) => {
+  if (toastId) closeOverlay(toastId);
+  const v = viewport() ?? { width: 1600, height: 1000 };
+  toastId = openOverlay({ mod: "md-viewer", kind: "window", frame: "none", width: TOAST.w, height: TOAST.h,
+    at: { x: v.width - TOAST.w - TOAST.margin, y: v.height - TOAST.h - TOAST.margin }, props: { reopened: true, toast: file } });
+};
+const WINDOWS_REVEAL = "using System; using System.Runtime.InteropServices; public static class MdViewerReveal { " +
+  "[DllImport(\"shell32.dll\", CharSet = CharSet.Unicode)] static extern int SHParseDisplayName(string name, IntPtr bc, out IntPtr pidl, uint sfgaoIn, out uint sfgaoOut); " +
+  "[DllImport(\"shell32.dll\")] static extern int SHOpenFolderAndSelectItems(IntPtr folder, uint count, IntPtr items, uint flags); " +
+  "[DllImport(\"ole32.dll\")] static extern int CoInitializeEx(IntPtr reserved, uint init); " +
+  "[DllImport(\"ole32.dll\")] static extern void CoTaskMemFree(IntPtr p); " +
+  "public static void Show(string path) { path = path.Replace('/', '\\\\'); CoInitializeEx(IntPtr.Zero, 2); IntPtr pidl; uint o; " +
+  "int hr = SHParseDisplayName(path, IntPtr.Zero, out pidl, 0, out o); if (hr != 0) throw new Exception(\"Cannot find \" + path); " +
+  "try { hr = SHOpenFolderAndSelectItems(pidl, 0, IntPtr.Zero, 0); if (hr != 0) throw new Exception(\"Explorer did not open it (\" + hr + \")\"); } finally { CoTaskMemFree(pidl); } } }";
+const checkedReveal = (r) => { if (r?.code) throw new Error(String(r.stderr || "Explorer did not open it").trim()); return r; };
+// Where a download goes. Windows: its Save As dialog (shows the files there, lets the copy be
+// renamed, asks before replacing one), opened by PowerShell on top of Herdr and starting in the
+// folder used last (Downloads at first). Elsewhere Herdr's folder picker, and a name already
+// taken there gets " (1)", " (2)"… like a browser's download. Resolves with the path, or null.
+const DOWNLOAD_DIR = "md-viewer.download-dir";
+async function chooseDownload(name) {
+  const last = shared(DOWNLOAD_DIR);
+  if (localName() === "windows") {
+    const script = [
+      "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)",
+      "Add-Type -AssemblyName System.Windows.Forms",
+      "$owner = New-Object Windows.Forms.Form -Property @{ TopMost = $true; ShowInTaskbar = $false }",
+      "$d = New-Object Windows.Forms.SaveFileDialog",
+      `$d.Title = ${psQuote(`Download ${name}`)}; $d.FileName = ${psQuote(name)}; $d.OverwritePrompt = $true`,
+      "$d.Filter = 'Markdown (*.md)|*.md;*.markdown|All files (*.*)|*.*'",
+      `$dir = ${psQuote(typeof last === "string" && last ? last : "")}; if (-not $dir -or -not (Test-Path -LiteralPath $dir)) { $dir = Join-Path $HOME 'Downloads' }`,
+      "$d.InitialDirectory = $dir",
+      // Exit as soon as it closes: the hidden owner form would otherwise keep PowerShell running.
+      "$picked = if ($d.ShowDialog($owner) -eq 'OK') { $d.FileName } else { '' }",
+      "$d.Dispose(); $owner.Dispose(); [Console]::Out.Write($picked); [Console]::Out.Flush(); [Environment]::Exit(0)",
+    ].join("; ");
+    // The dialog waits for the person: give it Herdr's longest wait (10 minutes).
+    const r = await exec("powershell", ["-NoProfile", "-NonInteractive", "-STA", "-Command", script], { timeout: 600000 });
+    if (r.code !== 0) throw new Error(String(r.stderr || "the Save As dialog did not open").trim());
+    const dest = r.stdout.trim();
+    if (dest) setShared(DOWNLOAD_DIR, paths.dirname(dest));
+    return dest || null;
+  }
+  const folder = await pickFolder({ prompt: `Download ${name} to` }).catch(() => null);
+  if (!folder) return null;
+  const dot = name.lastIndexOf("."), stem = dot > 0 ? name.slice(0, dot) : name, ext = dot > 0 ? name.slice(dot) : "";
+  // readTextFile gives null for a missing file (it rejects only when the file can't be read).
+  const taken = async (p) => (await readTextFile(p).catch(() => "")) !== null;
+  let dest = paths.join(folder, name);
+  for (let i = 1; await taken(dest); i++) {
+    if (i > 999) throw new Error("too many copies of it there already");
+    dest = paths.join(folder, `${stem} (${i})${ext}`);
+  }
+  return dest;
+}
+
+// The folder holding a file of this computer, with the file selected where the system can.
+const showInFolder = (file) => {
+  const os = localName();
+  // Asks the Explorer already running (SHOpenFolderAndSelectItems): Herdr ends what a command
+  // starts when it finishes, so starting explorer.exe from here opens nothing.
+  if (os === "windows") return powershell(exec, `Add-Type -TypeDefinition ${psQuote(WINDOWS_REVEAL)}; [MdViewerReveal]::Show(${psQuote(file)})`).then(checkedReveal);
+  return os === "macos" ? exec("open", ["-R", file]) : exec("xdg-open", [paths.dirname(file)]);
+};
 const OPEN_DIR = "data/kanso-open", REVIEW_DIR = "data/markdown-review", WAITING_DIR = "data/markdown-review-waiting", DONE_DIR = "data/markdown-review-done";
 const RECENT_MAX = 15, MAX_FILES = 500; // the folder list stops at MAX_FILES (shallowest first)
 // The window. Herdr's windows can't be resized or moved by a mod, so the panel does it itself:
@@ -94,12 +172,25 @@ export default class MdViewer extends View {
     cx.bind_keys(["MdViewer", "MdViewer > Input"].map((context) => ({ keystroke: "escape", action: "md_viewer_escape", context })));
     const given = props() ?? {};
     const v = viewport() ?? { width: 1600, height: 1000 };
+    if (typeof given.toast === "string") {
+      this.mode = "toast"; this.toastFile = given.toast; this.full = false;
+      // It counts down (the strip along its bottom) and waits while the pointer is on it.
+      // Timed by the clock (timer ticks run late); `left` is what remains while it waits.
+      this.hovered = false; this.left = TOAST.seconds * 1000; this.until = Date.now() + this.left;
+      cx.timer.every(TOAST.tick, (cx) => {
+        if (this.hovered || this.gone) return;
+        this.left = this.until - Date.now();
+        if (this.left <= 0) { this.gone = true; this.dismiss(); } else cx.notify();
+      });
+      return;
+    }
     this.drag = null; this.grow = false; this.handedOff = false;
     if (typeof given.file === "string" && given.file) {
       // A pane (a tab opened with "Open in new tab"): the file, sized by its pane, no window.
       this.mode = "pane"; this.full = false;
       this.makeFilter("");
       afterMount(cx, (cx) => { this.list(cx); this.open(given.file, cx, given.on ?? null); });
+      this.listen(cx);
       return;
     }
     if (given.reopened !== true) {
@@ -117,16 +208,20 @@ export default class MdViewer extends View {
     this.restore = given.restore ?? null;   // the rect to go back to from full screen
     this.win = given.at ?? { x: 0, y: 0 };  // where this window's top left is
     this.drag = given.drag ?? null;         // a resize begun in the window before this one
-    if (given.overlay) setShared(WINDOW_KEY, given.overlay);
+    this.docWin = given.docWin === true;    // a window of one file, over every space
+    if (given.overlay) { if (this.docWin) docWindows.add(given.overlay); else setShared(WINDOW_KEY, given.overlay); }
     const handed = given.handoff ? HANDOFF.get(given.handoff) : null;
     if (handed) { HANDOFF.delete(given.handoff); Object.assign(this, handed); }
     this.makeFilter(handed?.filterText ?? "");
-    this.watchOpens(cx, OPEN_DIR, false);
-    this.watchOpens(cx, REVIEW_DIR, true);
-    this.watchReviews(cx);
-    // "md-viewer.full" (a key or `herdr-app do`) does what the button does.
-    cx.spawn(async (cx) => { for (;;) { const c = await nextCommand(); if (c === "full") this.toggleFull(cx); } });
+    // Files sent to md-viewer (Ctrl-click, md-review) go to the panel's window, not a file's.
+    if (!this.docWin) {
+      this.watchOpens(cx, OPEN_DIR, false);
+      this.watchOpens(cx, REVIEW_DIR, true);
+      this.watchReviews(cx);
+    }
+    this.listen(cx);
     afterMount(cx, (cx) => {
+      if (!handed && this.docWin) { this.open(given.windowFile, cx, given.on ?? null); return; }
       if (!handed) { this.list(cx); this.findRecent(focused()?.terminal ?? null, cx); return; }
       // The window before this one watched the file and timed the save; this one does now.
       if (this.doc) { this.watch(this.doc.path, cx); if (this.doc.dirty) this.doc.later(cx); }
@@ -140,9 +235,14 @@ export default class MdViewer extends View {
       const other = shared(WINDOW_KEY);
       if (typeof other === "string" && other) {
         const r = await exec("herdr-app", ["status"]).catch(() => null);
-        const count = (String(r?.stdout ?? "").match(/"md-viewer"/g) ?? []).length;
+        const count = (String(r?.stdout ?? "").match(/"md-viewer"/g) ?? []).length - (toastId ? 1 : 0) - docWindows.size;
         setShared(WINDOW_KEY, null);
-        if (count >= 2) { closeOverlay(other); this.closeSelf(); return; }
+        if (count >= 2) {
+          // Pressed from another folder: the open window shows that one; from its own, it closes.
+          const here = placeOf(focused(), spaces(), home());
+          if (livePlace && !samePlace(here, livePlace)) { setShared(WINDOW_KEY, other); run("md-viewer.retarget"); this.closeSelf(); return; }
+          closeOverlay(other); this.closeSelf(); return;
+        }
         // Otherwise it was left over from a window that closed without saying so.
       }
       this.swap({ rect: this.rect });
@@ -164,6 +264,7 @@ export default class MdViewer extends View {
   closeSelf() {
     this.handedOff = true;
     const id = props()?.overlay;
+    docWindows.delete(id);
     if (id) closeOverlay(id);
   }
 
@@ -175,7 +276,7 @@ export default class MdViewer extends View {
     if (token) HANDOFF.set(token, { doc: this.doc, files: this.files, recent: this.recent, reviewing: this.reviewing,
       folder: this.folder, on: this.on, notice: this.notice, poll: this.poll, filterText: this.filterText });
     openOverlay({ mod: "md-viewer", kind: "window", frame: "none", at,
-      props: { reopened: true, handoff: token, full, rect, restore, canvas, drag, at } });
+      props: { reopened: true, handoff: token, full, rect, restore, canvas, drag, at, docWin: this.docWin === true } });
     this.doc = null; // the next window has it now
     this.closeSelf();
   }
@@ -186,6 +287,18 @@ export default class MdViewer extends View {
       const r = await localService(markdownApi).recent(terminal, home(), appHome(), localService(clipboardApi).read(cx) ?? "").catch(() => null);
       this.recent = recentIn(r?.stdout ?? "");
       cx.notify();
+    });
+  }
+
+  // Ctrl+Shift+M from another folder: this window lists that folder (a file open here is saved
+  // and closed first). Only the window does this, not a file's tab.
+  retarget(cx) {
+    if (this.mode !== "window" && this.mode !== "canvas") return;
+    const doc = this.doc;
+    cx.spawn(async (cx) => {
+      if (doc) { if (!(await doc.flush())) { cx.notify(); return; } doc.release(); this.doc = null; }
+      this.clearFilter(cx);
+      this.refreshList(cx);
     });
   }
 
@@ -298,6 +411,7 @@ export default class MdViewer extends View {
     if (this.handedOff) return;
     const doc = this.doc, id = props()?.overlay;
     if (id && shared(WINDOW_KEY) === id) setShared(WINDOW_KEY, null);
+    docWindows.delete(id);
     const done = () => { if (id) closeOverlay(id); };
     if (!doc) { done(); return; }
     cx.spawn(async (cx) => {
@@ -326,6 +440,26 @@ export default class MdViewer extends View {
 
   // A new tab in the focused space whose only pane shows this file (split a shell beside it like
   // any tab). The tab is named after the file.
+  // A file in a window of its own: floats over every space (a tab stays in its space), moves,
+  // resizes and maximizes like this one. Each new one opens a little lower right than the last.
+  openInWindow(path, on = null) {
+    const v = viewport() ?? { width: 1600, height: 1000 };
+    const s = savedSize(v), step = 28 * ((docWindows.size % 8) + 1);
+    const rect = this.fit({ x: Math.round((v.width - s.w) / 2) + step, y: Math.round((v.height - s.h) / 2) + step, ...s });
+    const at = { x: rect.x - RESIZE, y: rect.y - RESIZE };
+    openOverlay({ mod: "md-viewer", kind: "window", frame: "none", at,
+      props: { reopened: true, docWin: true, windowFile: path, on, rect, at } });
+  }
+
+  docInWindow(cx) {
+    const doc = this.doc;
+    if (!doc) return;
+    cx.spawn(async (cx) => {
+      if (!(await doc.flush())) { cx.notify(); return; }
+      this.openInWindow(doc.path, doc.on);
+    });
+  }
+
   openInTab(path, on = null) {
     run("tab.new", { name: nameOf(path), mod: "md-viewer", props: { file: path, on } });
   }
@@ -337,6 +471,42 @@ export default class MdViewer extends View {
     cx.spawn(async (cx) => {
       if (!(await doc.flush())) { cx.notify(); return; }
       this.openInTab(doc.path, doc.on);
+    });
+  }
+
+  // "md-viewer.full" (a key or `herdr-app do`) does what the button does.
+  listen(cx) {
+    cx.spawn(async (cx) => { for (;;) { const c = await nextCommand(); if (this.docWin) continue; if (c === "full") this.toggleFull(cx); if (c === "retarget") this.retarget(cx); } });
+  }
+
+  // A copy of a file, where the person chooses (chooseDownload: Save As on Windows). For the file
+  // shown here it is what is on screen now, edits included; from the list, the file as it is (read
+  // from its machine, so a file on another machine comes here).
+  download(cx) {
+    const doc = this.doc;
+    if (!doc) return;
+    const text = doc.text ?? doc.saved;
+    if (text == null) { this.notice = "Nothing to download yet: the file has not been read."; cx.notify(); return; }
+    this.downloadFile(doc.path, doc.on, text, cx);
+  }
+
+  downloadFile(path, on, text, cx) {
+    const name = nameOf(path);
+    cx.spawn(async (cx) => {
+      try {
+        const dest = await chooseDownload(name);
+        if (!dest) return;
+        if (text == null) text = on ? await (await serviceOn(fileApi, on)).read(path) : await readTextFile(path);
+        if (text == null) throw new Error("it is no longer there");
+        // Replacing a file the person agreed to replace: what is there now is what we expect.
+        const there = await readTextFile(dest).catch(() => null);
+        await writeTextFile(dest, text, there);
+        this.notice = null;
+        showDownloaded(dest);
+      } catch (e) {
+        this.notice = `Could not download ${name}: ${e?.message ?? e}`;
+      }
+      cx.notify();
     });
   }
 
@@ -431,8 +601,47 @@ export default class MdViewer extends View {
     });
   }
 
+  dismiss() {
+    const id = props()?.overlay;
+    if (id) closeOverlay(id);
+    if (toastId === id) toastId = null;
+  }
+
+  // The toast after a download: a click opens the copy in a tab; the folder button shows it in
+  // Explorer (Finder on macOS).
+  toastView(t) {
+    const file = this.toastFile, stop = (_e, cx) => cx.stop_propagation();
+    const action = (id, icon, tip, fn) => div().id(id).flex_none().p(6).rounded(6).cursor_pointer().text_color(t.muted).tooltip(tip)
+      .hover((s) => s.bg(t.raised).text_color(t.foreground)).on_mouse_down("left", stop)
+      .on_click((_e, cx) => { cx.stop_propagation(); fn(); })
+      .child(svg(`${ICONS}/${icon}.svg`).size(15));
+    const openTab = () => { this.openInTab(file); this.dismiss(); };
+    // The hover color is see-through, so it sits on an opaque layer: nothing behind shows.
+    const share = Math.max(0, Math.min(1, this.left / (TOAST.seconds * 1000)));
+    return div().size_full().relative().rounded(8).overflow_hidden().bg(t.popover).child(h_flex().id("md-toast").size_full().pl(16).pr(8).gap(12).items_center()
+      .rounded(8).border_1().border_color(t.border).cursor_pointer().hover((s) => s.bg(t.hover)).on_mouse_down("left", stop).on_click(() => openTab())
+      .on_hover((hovered, cx) => {
+        if (hovered === this.hovered) return;
+        if (hovered) this.left = Math.max(0, this.until - Date.now());
+        else this.until = Date.now() + this.left;
+        this.hovered = hovered; cx.notify();
+      })
+      .child(div().size(8).rounded(4).flex_none().bg(t.done))
+      .child(v_flex().flex_1().min_w(0)
+        .child(div().truncate().font_semibold().text_size(13).text_color(t.foreground).child(`Downloaded ${nameOf(file)}`))
+        .child(div().truncate().text_size(12).text_color(t.muted).child(file)))
+      .child(action("md-toast-tab", "open-tab", "Open in new tab", openTab))
+      // Closing this window ends its command, so the toast waits until Explorer has the folder.
+      .child(action("md-toast-folder", "folder-open", "Show in folder", () => { showInFolder(file).catch(() => {}).finally(() => this.dismiss()); }))
+      .child(action("md-toast-close", "close", "Dismiss", () => this.dismiss())))
+      // Time left: full at first, empty when it goes; dimmer while it waits under the pointer.
+      .child(div().absolute().left(0).bottom(0).h(3).w(Math.round(TOAST.w * share)).bg(t.accent).opacity(this.hovered ? 0.4 : 1));
+  }
+
   render() {
     const t = theme();
+    if (this.mode === "toast") return this.toastView(t);
+    if ((this.mode === "window" || this.mode === "canvas") && !this.docWin) livePlace = { folder: this.folder, on: this.on };
     const doc = this.doc;
     const button = (id, icon, tip, action) => div().id(id).p(4).rounded(6).cursor_pointer().text_color(t.muted).tooltip(tip)
       .hover((s) => s.bg(t.hover).text_color(t.foreground)).on_click((_e, cx) => action(cx))
@@ -462,8 +671,8 @@ export default class MdViewer extends View {
       .min_h(0).bg(t.background).text_color(t.foreground).text_size(13)
       .on_key_down((e, cx) => doc?.key(e, cx))
       .child(h_flex().h(42).flex_none().px(10).gap(6).items_center().border_b(1).border_color(t.border)
-        .when(Boolean(doc), (el) => el.child(button("md-back", "chevron-left", "Markdown in this folder", (cx) => this.back(cx))))
-        .child(v_flex().flex_1().min_w(0).pl(doc ? 0 : 4)
+        .when(Boolean(doc) && !this.docWin, (el) => el.child(button("md-back", "chevron-left", "Markdown in this folder", (cx) => this.back(cx))))
+        .child(v_flex().flex_1().min_w(0).pl(doc && !this.docWin ? 0 : 4)
           .child(div().truncate().font_semibold().child(doc ? nameOf(doc.path) : "Markdown"))
           .child(div().truncate().text_size(11).text_color(t.dim).child(`${tildePath(doc ? folderOf(doc.path) : this.folder, doc ? doc.on : this.on)}${doc?.held ? ` · ${asOf(doc.held.at, Date.now())}` : ""}`)))
         .children(doc ? doc.controls(t, "md") : [])
@@ -472,6 +681,8 @@ export default class MdViewer extends View {
         .when(reviewing, (el) => el.child(div().id("md-done").flex_none().px(8).py(3).rounded(6).cursor_pointer().text_size(12)
           .bg(t.raised).border_1().border_color(t.border).tooltip("Review done: tell the agent").hover((s) => s.bg(t.hover))
           .on_click((_e, cx) => this.done(cx)).child("Done")))
+        .when(Boolean(doc), (el) => el.child(button("md-download", "download", "Download a copy", (cx) => this.download(cx))))
+        .when(Boolean(doc) && !this.docWin, (el) => el.child(button("md-win", "open-window", "Open in window (stays over every space)", (cx) => this.docInWindow(cx))))
         .when(Boolean(doc) && !pane, (el) => el.child(button("md-tab", "open-tab", "Open in new tab", (cx) => this.docInTab(cx))))
         .when(!pane, (el) => el
           .child(button("md-full", this.full ? "restore" : "maximize", this.full ? "Restore window" : "Full screen", (cx) => this.toggleFull(cx)))
@@ -511,12 +722,22 @@ export default class MdViewer extends View {
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_click((_e, cx) => { cx.stop_propagation(); this.openInTab(path, on); })
       .child(svg(`${ICONS}/open-tab.svg`).size(13));
+    const downloadButton = (id, path, on) => div().id(`${id}-download`).flex_none().p(4).rounded(6).cursor_pointer().text_color(t.dim).tooltip("Download a copy")
+      .hover((s) => s.bg(t.raised).text_color(t.foreground))
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => { cx.stop_propagation(); this.downloadFile(path, on, null, cx); })
+      .child(svg(`${ICONS}/download.svg`).size(13));
+    const windowButton = (id, path, on) => div().id(`${id}-win`).flex_none().p(4).rounded(6).cursor_pointer().text_color(t.dim).tooltip("Open in window")
+      .hover((s) => s.bg(t.raised).text_color(t.foreground))
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => { cx.stop_propagation(); this.openInWindow(path, on); })
+      .child(svg(`${ICONS}/open-window.svg`).size(13));
     const row = (id, name, sub, path, on = null, indent = 10) => h_flex().id(id).flex_none().h(30).pl(indent).pr(4).gap(9).items_center().rounded(6).cursor_pointer()
       .hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.open(path, cx, on))
       .child(svg(`${ICONS}/file.svg`).size(14).flex_none().text_color(t.muted))
       .child(div().flex_none().max_w(320).truncate().text_size(13).text_color(t.foreground).child(name))
       .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(sub))
-      .child(tabButton(id, path, on));
+      .child(h_flex().flex_none().gap(2).child(downloadButton(id, path, on)).child(windowButton(id, path, on)).child(tabButton(id, path, on)));
     const section = (icon, label, count) => h_flex().flex_none().h(30).px(10).mt(6).gap(8).items_center()
       .child(svg(`${ICONS}/${icon}.svg`).size(14).flex_none().text_color(t.foreground))
       .child(div().flex_1().min_w(0).truncate().text_size(12.5).font_medium().text_color(t.foreground).child(label))
