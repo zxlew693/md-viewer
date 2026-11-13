@@ -4,7 +4,7 @@ A Markdown viewer and editor for the [Herdr](https://herdr.dev) app. Read the
 plans, notes and reviews your agents write in a window over any layout or in
 a tab of their own. You can edit them right where you read them.
 
-![md-viewer](preview.png)
+![md-viewer](preview.gif)
 
 ## Features
 
