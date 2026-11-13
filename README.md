@@ -33,8 +33,9 @@ a tab of their own. You can edit them right where you read them.
   before replacing a file). On macOS and Linux you pick a folder, and a name
   already taken there becomes "name (1).md".
   The "Downloaded" message stays 30 seconds (a strip counts down, and it waits
-  while the pointer is on it); it opens the copy in a tab, or
-  shows it in its folder.
+  while the pointer is on it); its buttons open the copy in a tab or show it
+  in its folder. Clicking it doesn't close it; only its close button or the
+  countdown does.
 - **Other machines**: in a pane on an SSH machine, it lists and shows that
   machine's files (read only).
 - **Reviews**: `md-review <file>` lets an agent hand you a file to review and

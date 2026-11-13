@@ -607,19 +607,18 @@ export default class MdViewer extends View {
     if (toastId === id) toastId = null;
   }
 
-  // The toast after a download: a click opens the copy in a tab; the folder button shows it in
-  // Explorer (Finder on macOS).
+  // The toast after a download: its buttons open the copy in a tab or show it in Explorer
+  // (Finder on macOS). Only the close button or the countdown takes it away; clicks don't.
   toastView(t) {
     const file = this.toastFile, stop = (_e, cx) => cx.stop_propagation();
     const action = (id, icon, tip, fn) => div().id(id).flex_none().p(6).rounded(6).cursor_pointer().text_color(t.muted).tooltip(tip)
       .hover((s) => s.bg(t.raised).text_color(t.foreground)).on_mouse_down("left", stop)
       .on_click((_e, cx) => { cx.stop_propagation(); fn(); })
       .child(svg(`${ICONS}/${icon}.svg`).size(15));
-    const openTab = () => { this.openInTab(file); this.dismiss(); };
     // The hover color is see-through, so it sits on an opaque layer: nothing behind shows.
     const share = Math.max(0, Math.min(1, this.left / (TOAST.seconds * 1000)));
     return div().size_full().relative().rounded(8).overflow_hidden().bg(t.popover).child(h_flex().id("md-toast").size_full().pl(16).pr(8).gap(12).items_center()
-      .rounded(8).border_1().border_color(t.border).cursor_pointer().hover((s) => s.bg(t.hover)).on_mouse_down("left", stop).on_click(() => openTab())
+      .rounded(8).border_1().border_color(t.border).on_mouse_down("left", stop)
       .on_hover((hovered, cx) => {
         if (hovered === this.hovered) return;
         if (hovered) this.left = Math.max(0, this.until - Date.now());
@@ -630,9 +629,8 @@ export default class MdViewer extends View {
       .child(v_flex().flex_1().min_w(0)
         .child(div().truncate().font_semibold().text_size(13).text_color(t.foreground).child(`Downloaded ${nameOf(file)}`))
         .child(div().truncate().text_size(12).text_color(t.muted).child(file)))
-      .child(action("md-toast-tab", "open-tab", "Open in new tab", openTab))
-      // Closing this window ends its command, so the toast waits until Explorer has the folder.
-      .child(action("md-toast-folder", "folder-open", "Show in folder", () => { showInFolder(file).catch(() => {}).finally(() => this.dismiss()); }))
+      .child(action("md-toast-tab", "open-tab", "Open in new tab", () => this.openInTab(file)))
+      .child(action("md-toast-folder", "folder-open", "Show in folder", () => { showInFolder(file).catch(() => {}); }))
       .child(action("md-toast-close", "close", "Dismiss", () => this.dismiss())))
       // Time left: full at first, empty when it goes; dimmer while it waits under the pointer.
       .child(div().absolute().left(0).bottom(0).h(3).w(Math.round(TOAST.w * share)).bg(t.accent).opacity(this.hovered ? 0.4 : 1));
