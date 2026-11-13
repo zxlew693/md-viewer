@@ -1,0 +1,22 @@
+md-viewer, a Markdown window and tabs for the Herdr app
+Copyright 2026 zxlew693
+
+md-viewer is derived from the markdown-panel mod of Kanso, a layout for the
+Herdr app (https://github.com/jlopezlira/herdr-kanso, Apache License 2.0),
+Copyright 2026 jlopezlira. Kanso's mods are derived from mods shipped with
+Herdr (https://github.com/herdrdev/herdr-app, Apache License 2.0), through the
+0oz-design fork by 0OZ (https://github.com/0OZ/0oz-design) and the
+minimalistic layout by José Gutiérrez (https://github.com/josedugu/minimalistic).
+
+The reviews (md-review and Done), the Escape key and the "From this terminal"
+list come from herdr-md-review by Johannes Hund
+(https://github.com/h0ru5/herdr-md-review, Apache License 2.0).
+
+chevron-left.svg is from Lucide (https://lucide.dev, ISC License). The ISC
+notice is in icons/LICENSE-lucide.txt.
+
+Changes in md-viewer, by zxlew693: renamed from markdown-panel; the window
+draws its own frame, resizes from every edge and corner, maximizes and
+restores; files open in new Herdr tabs; the file list has a filter and is
+grouped by folder, with new icons; paths with backslashes show correctly on
+Windows. Each changed file's header says so.

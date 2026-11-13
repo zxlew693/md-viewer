@@ -1,0 +1,6 @@
+{
+  "global": {
+    "ctrl-shift-m": "mod.open:md-viewer",
+    "cmd-shift-m": "mod.open:md-viewer"
+  }
+}
