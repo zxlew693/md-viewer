@@ -6,7 +6,7 @@
 # Usage: recent.sh <hc terminal id>. Prints existing absolute paths, one per line.
 t=$1
 {
-  (wl-paste -n 2>/dev/null || pbpaste 2>/dev/null) | head -c 4096
+  (wl-paste -n 2>/dev/null || xclip -selection clipboard -o 2>/dev/null || xsel -bo 2>/dev/null || pbpaste 2>/dev/null) | head -c 4096
   echo
   # A path wrapped across screen lines is missed; the scratchpad list covers the usual case.
   [ -n "$t" ] && hc read "$t" 2>/dev/null | grep -oE '(~|/)[^][ "`'"'"'()<>|:]*\.(md|markdown|mdx)' | sed -n '1!G;h;$p'
